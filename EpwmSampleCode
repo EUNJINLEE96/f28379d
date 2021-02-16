@@ -1,0 +1,143 @@
+#include "F28x_Project.h"
+
+//globals
+volatile unsigned int EPwm_CMPA_Direction;
+volatile unsigned int EPwm_CMPB_Direction;
+volatile unsigned int EPwmTimerIntCount;
+
+volatile unsigned int EPwmMaxCMPA;
+volatile unsigned int EPwmMinCMPA;
+volatile unsigned int EPwmMaxCMPB;
+volatile unsigned int EPwmMinCMPB;
+
+//////update CMPA and CMPB values/////////
+interrupt void epwm1_isr(void){
+    //Every 10th interrupt, change CMPA/CMPB values
+    if(EPwmTimerIntCount==10){
+        EPwmTimerIntCount=0;
+        //If we were increasing CMPA, check to see if we reached the max value.
+        //If not, increase CMPA. else, change directions and decrease CMPA
+        if(EPwm_CMPA_Direction==1){//up
+            if(EPwm1Regs.CMPA.bit.CMPA < EPwmMaxCMPA){
+                EPwm1Regs.CMPA.bit.CPMA++;
+            }
+            else{
+                EPwm_CMPA_Direction=0;
+                EPwm1Regs.CMPA.bit.CMPA--;
+            }
+        }
+        //If we were decreasing CMPA, check to see if we reached the min value.
+        //If not, decrease CMPA. else, change directions and increase CMPA
+        else{
+            if(EPwm1Regs.CMPA.bit.CMPA==EpwmMinCMPA){
+                EPwm_CMPA_Direction=1;
+                EPwm1Regs.CMPA.bit.CMPA++;
+            }
+            else{
+                EPwm1Regs.CMPA.bit.CMPA--;
+            }
+        }
+
+        // If we were increasing CMPB, check to see if we reached the max value.  If not, increase CMPB. else, change directions and decrease CMPB
+        if(EPwm_CMPB_Direction == 1){
+            if(EPwm1Regs.CMPB.bit.CMPB < EPwmMaxCMPB){
+                EPwm1Regs.CMPB.bit.CMPB++;
+            }
+            else{
+                 EPwm_CMPB_Direction = 0;
+                 EPwm1Regs.CMPB.bit.CMPB--;
+            }
+       }
+       // If we were decreasing CMPB, check to see if we reached the min value.  If not, decrease CMPB. else, change directions and increase CMPB
+        else{
+             if(EPwm1Regs.CMPB.bit.CMPB == EPwmMinCMPB){
+                    EPwm_CMPB_Direction = 1;
+                    EPwm1Regs.CMPB.bit.CMPB++;
+             }
+             else{
+                    EPwm1Regs.CMPB.bit.CMPB--;
+             }
+        }
+    }
+    else{
+        EPwmTimerIntCount++;
+    }
+
+    EPwm1Regs.ETCLR.bit.INT=1; //clear
+    PieCtrlRegs.PIEACK.all=PIEACK_GROUP3;
+}
+
+int main(){
+    InitSysCtrl();
+    InitGpio();
+    CpuSysRegs.PCLKCR2.bit.EPWM1=1;
+
+    InitEPwm1Gpio();
+
+    DINT;
+    InitPieCtrl();
+    IER=0x0000;
+    IFR=0x0000;
+    InitPieVectTable();
+
+    EALLOW;
+    PieVectTable.EPWM_INT=&epwm1_isr;
+    EDIS;
+
+    EALLOW;
+    CpuSysRegs.PCLKCR0.bit.TBCLKSYNC=0;//time base clk of all ePWM modules is stopped
+    EDIS;
+
+    //////initialize the ePWM//////
+    //Setup TBCLK
+    EPwm1Regs.TBPRD=2000; //!!!!!set period of time base counter 801 TBCLKs
+    EPwm1Regs.TBPHS.bit.TBPHS=0x0000; //phase is 0
+    EPwm1Regs.TBCTR=0x0000; //clear counter
+    //Set Compare values
+    EPwm1Regs.CMPA.bit.CMPA=50; //set compare A value
+    EPwm1Regs.CMPB.bit.CMPB=1950; //set compare B value
+    //Setup counter mode
+    EPwm1Regs.TBCTL.bit.CTRMODE=2; //Count up and down
+    EPwm1Regs.TBCTL.bit.PHSEN=0; //Disable phase loading (TBPHS value)
+    EPwm1Regs.TBCTL.bit.HSPCLKDIV=0; //tbclk prescale. TBCLK=EPWMCLK
+    EPwm1Regs.TBCTL.bit.CLKDIV=0;//
+    //Setup shadowing
+    EPwm1Regs.CMPCTL.bit.SHDWAMODE=0; //Shadow mode
+    EPwm1Regs.CMPCTL.bit.SHDWBMODE=0;
+    EPwm1Regs.CMPCTL.bit.LOADAMODE=0; //Load on TBCTR=Zero
+    EPwm1Regs.CMPCTL.bit.LOADBMODE=0;
+    //Set actions
+    EPwm1Regs.AQCTLA.bit.CAU=2; //Set PWM1A on event A, up count
+    EPwm1Regs.AQCTLA.bit.CAD=1; //Clear PWM1A on event A, down count
+    EPwm1Regs.AQCTLB.bit.CBU=2; //Set PWM1B on event B, up count
+    EPwm1Regs.AQCTLB.bit.CBD=1; //Clear PWM1B on event B, down count
+    //Interrupt where we will change the compare values
+    EPwm1Regs.ETSEL.bit.INTSEL=1; //TBCTR=Zero event is trigger for EPWM1_INT
+    EPwm1Regs.ETSEL.bit.INTEN=1; //Enable INT
+    EPwm1Regs.ETPS.bit.INTPRD=3; //Generate INT on every 3rd TBCTR=Zero event
+
+    ////Below values are used to keep track of the direction the CMPA/CMPB values are moving, the min and max allowed values
+    ////and a pointer to the correct ePWM registers
+    EPwm_CMPA_Direction=1; //start by increasing CMPA and decreasing CMPB <-> decreasing EPWM1 duty and increasing EPWM2 duty
+    EPwm_CMPB_Direction=0;
+    EPwmTimerIntCount=0; //Zero the interrupt counter
+
+    EPwmMaxCMPA=1950; //setup min/max CMPA/CMPB values
+    EPwmMinCMPA=50;
+    EPwmMaxCMPB=1950;
+    EPwmMinCMPB=50;
+
+    EALLOW;
+    CpuSysRegs.PCLKCR0.bit.TBCLKSYNC=1; //all TBCLK start counting
+    EDIS;
+
+    IER=M_INT3;
+    PieCtrlRegs.PIEIER3.bit.INTx1=1; //EPWM1_INT
+    EINT;
+    ERTM; //Enable Global realtime interrupt DBGM
+
+
+    return 0;
+}
+
+
