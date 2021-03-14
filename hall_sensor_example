@@ -1,0 +1,150 @@
+#include <F28x_Project.h>
+#include <hall_sensor5.h>
+
+/**
+ * main.c
+ */
+//Uint32 duty[4];
+//int test;
+float64 Wr;
+interrupt void ecap1_isr(void){
+    ECap1Regs.ECCLR.bit.INT = 1; //global interrupt status clear. clears INT flag and enables interrupt by CEVTx flag
+    ECap1Regs.ECCLR.bit.CEVT1 = 1; //CEVT1 flag clear
+    PieCtrlRegs.PIEACK.all |= PIEACK_GROUP4;
+    Uint32 T = ECap1Regs.CAP1;
+    Wr=2*3.14*1000000000/5/T; //PI 2pi/(5ns*#ofTSCount), tsclk=sysclk=200MHz !!!!!!!!!!!!!!!!!!!
+}
+
+/*
+interrupt void epwm1_isr(void){
+    EPwm1Regs.ETCLR.bit.INT=1; //clear
+    PieCtrlRegs.PIEACK.all |= PIEACK_GROUP3;
+}
+*/
+
+int main(void)
+{
+
+    InitSysCtrl();
+    InitGpio();
+
+    // EPWM1 CONFIGURATION
+    //CpuSysRegs.PCLKCR2.bit.EPWM1 = 1; // enable clock for EPWM1
+
+    DINT;
+    InitPieCtrl();
+
+    IER = 0x0000;
+    IFR = 0x0000;
+
+    InitPieVectTable();
+
+    /////요기 밑으론 필요 없음. hall_sensor5에 다 구현돼있음
+
+    /*
+    EALLOW;
+    PieVectTable.EPWM1_INT=&epwm1_isr;
+    EDIS;
+    IER |= M_INT3;
+    PieCtrlRegs.PIEIER3.bit.INTx1=1; //EPWM1_INT
+
+    InitEPwm1Gpio();
+    GpioCtrlRegs.GPAGMUX1.bit.GPIO0=0; //EPWM1A
+    GpioCtrlRegs.GPAGMUX1.bit.GPIO1=0; //EPWM1B
+
+    EALLOW;
+    CpuSysRegs.PCLKCR0.bit.TBCLKSYNC=0;// time base clk of all ePWM modules is stopped
+    EDIS;
+
+    // initialize EPWM1
+    //Setup TBCLK
+    EPwm1Regs.TBPRD=1000;
+    EPwm1Regs.TBPHS.bit.TBPHS=0x0000; //phase is 0
+    EPwm1Regs.TBCTR=0x0000; //clear counter
+    //Set Compare values
+    EPwm1Regs.CMPA.bit.CMPA=700; //set compare A value
+    EPwm1Regs.CMPB.bit.CMPB=1950; //set compare B value
+    //Setup counter mode
+    EPwm1Regs.TBCTL.bit.CTRMODE=2; //Count up and down
+    EPwm1Regs.TBCTL.bit.PHSEN=0; //Disable phase loading (TBPHS value)
+    EPwm1Regs.TBCTL.bit.HSPCLKDIV=0; //tbclk prescale. TBCLK=EPWMCLK
+    EPwm1Regs.TBCTL.bit.CLKDIV=0;//
+    //Setup shadowing
+    EPwm1Regs.CMPCTL.bit.SHDWAMODE=0; //Shadow mode
+    EPwm1Regs.CMPCTL.bit.SHDWBMODE=0;
+    EPwm1Regs.CMPCTL.bit.LOADAMODE=0; //Load on TBCTR=Zero
+    EPwm1Regs.CMPCTL.bit.LOADBMODE=0;
+    //Set actions
+    EPwm1Regs.AQCTLA.bit.CAU=2; //Set PWM1A on event A, up count
+    EPwm1Regs.AQCTLA.bit.CAD=1; //Clear PWM1A on event A, down count
+    EPwm1Regs.AQCTLB.bit.CBU=2; //Set PWM1B on event B, up count
+    EPwm1Regs.AQCTLB.bit.CBD=1; //Clear PWM1B on event B, down count
+    //Interrupt where we will change the compare values
+    EPwm1Regs.ETSEL.bit.INTSEL=1; //TBCTR=Zero event is trigger source for EPWM1_INT
+    EPwm1Regs.ETSEL.bit.INTEN=1; //Enable INT
+    EPwm1Regs.ETPS.bit.INTPRD=3; //Generate INT on every 3rd TBCTR=Zero event
+
+    EALLOW;
+    CpuSysRegs.PCLKCR0.bit.TBCLKSYNC=1; //all TBCLK start counting
+    EDIS;
+    // END OF EPWM CONFIGURATION
+*/
+    // eCAP CONFIGURATION
+    // 1. Input-X-Bar
+    EALLOW;
+
+    InputXbarRegs.INPUT7SELECT = 60; // connect GPIO60(hall_sensor_u) input to INPUT-X-BAR line no.7 -> eCAP1
+    EDIS;
+
+    //ecap_connect_int
+    // 2. Connect Interrupt
+
+    EALLOW;
+    PieVectTable.ECAP1_INT = &ecap1_isr; //& 필요 없음??
+    EDIS;
+    IER |= M_INT4;
+    PieCtrlRegs.PIEIER4.bit.INTx1 = 1; // enable ECAP1 PIE Interrupt
+
+    // 2. configure eCAP
+    ECap1Regs.ECEINT.all = 0x0000; // Disable All ECAP Interrupt
+
+    ECap1Regs.ECCLR.all = 0xFFFF; // clear All ECAP interrupt flag
+
+    ECap1Regs.ECCTL1.bit.CAPLDEN = 0;       // Start configuration. Disable CAP1x register loading (capture event가 레지스터에 loading이 안 되게 한다)
+    ECap1Regs.ECCTL2.bit.TSCTRSTOP = 0;     // Stop time stamp counter
+
+    ECap1Regs.ECCTL1.bit.PRESCALE = 0; // no prescale
+    ECap1Regs.ECCTL1.bit.CAP1POL = 1; // capture event1 enable on rising edge
+    //ECap1Regs.ECCTL1.bit.CAP2POL = 1;
+    //ECap1Regs.ECCTL1.bit.CAP3POL = 1;
+    //ECap1Regs.ECCTL1.bit.CAP4POL = 1;
+    ECap1Regs.ECCTL1.bit.CTRRST1 = 1; // difference mode operation: reset tscounter when capture event occurs. CAP1 register has counter value till CEVT1
+    //ECap1Regs.ECCTL1.bit.CTRRST2 = 1;
+    //ECap1Regs.ECCTL1.bit.CTRRST3 = 1;
+    //ECap1Regs.ECCTL1.bit.CTRRST4 = 1;
+
+    ECap1Regs.ECCTL1.bit.CAPLDEN = 1; // CAPx register loading enable
+
+    ECap1Regs.ECCTL2.bit.CAP_APWM = 0; // capture mode
+    ECap1Regs.ECCTL2.bit.CONT_ONESHT = 0; // one-shot mode
+    ECap1Regs.ECCTL2.bit.SYNCO_SEL = 0; // pass the syncInput to syncOutput
+    ECap1Regs.ECCTL2.bit.SYNCI_EN = 0; // Disable SyncIn. APWM mode로 사용하지 않으므로, CTRPHS값이 TSCTR에 loading될 필요가 없음.
+
+
+    //start_ecap
+    ECap1Regs.ECCTL2.bit.TSCTRSTOP = 1; // configuration is done. start eCAP_RUN;
+
+    ECap1Regs.ECCTL2.bit.STOP_WRAP = 0; //wrap around after CEVT1
+
+    ECap1Regs.ECEINT.bit.CEVT1 = 1;//enable CEVT1 as interrupt source
+
+
+    EINT;
+    ERTM;
+
+    while(1){
+
+    }
+
+    return 0;
+}
