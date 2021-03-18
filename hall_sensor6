@@ -1,0 +1,266 @@
+#include <F28x_Project.h>
+#include <hall_sensor.h>
+#include <constants.h>
+Hall_state hall_state;
+float32 POLE_PAIR_ = 1;
+Uint32 SAMPLE_FREQ = 1;
+
+void Init_hall_sensor(Uint16 pole_pair, Uint32 sampling_frequency){
+    POLE_PAIR_ = pole_pair;
+    SAMPLE_FREQ = sampling_frequency;
+
+    EALLOW;
+    // H_U
+    GpioCtrlRegs.GPBGMUX2.bit.GPIO60 = 0; // use GPIO60 as gpio
+    GpioCtrlRegs.GPBMUX2.bit.GPIO60 = 0;
+    GpioCtrlRegs.GPBDIR.bit.GPIO60 = 0; // GPIO FOR INPUT
+    GpioCtrlRegs.GPBQSEL2.bit.GPIO60 = 0x0; // Input Qualification type - Sync
+    GpioCtrlRegs.GPBPUD.bit.GPIO60 = 0; // PULL UP
+    // H_V
+    GpioCtrlRegs.GPAGMUX2.bit.GPIO22 = 0;
+    GpioCtrlRegs.GPAMUX2.bit.GPIO22 = 0;
+    GpioCtrlRegs.GPADIR.bit.GPIO22 = 0;
+    GpioCtrlRegs.GPAQSEL2.bit.GPIO22 = 0x0;
+    GpioCtrlRegs.GPAPUD.bit.GPIO22 = 0;
+    // H_W
+    GpioCtrlRegs.GPDGMUX1.bit.GPIO105 = 0;
+    GpioCtrlRegs.GPDMUX1.bit.GPIO105 = 0;
+    GpioCtrlRegs.GPDDIR.bit.GPIO105 = 0;
+    GpioCtrlRegs.GPDQSEL1.bit.GPIO105 = 0X0;
+    GpioCtrlRegs.GPDPUD.bit.GPIO105 = 0;
+}
+void Start_hall_sensor(){
+    hall_state.hu = GpioDataRegs.GPBDAT.bit.GPIO60;
+    hall_state.hv = GpioDataRegs.GPADAT.bit.GPIO22;
+    hall_state.hw = GpioDataRegs.GPDDAT.bit.GPIO105;
+}
+
+Hall_state hall_sensor_update(){
+    Hall_state state;
+
+    state.hu = GpioDataRegs.GPBDAT.bit.GPIO60;
+    state.hv = GpioDataRegs.GPADAT.bit.GPIO22;
+    state.hw = GpioDataRegs.GPDDAT.bit.GPIO105;
+
+    hall_state = state;
+
+    return state;
+}
+
+
+//////////////////get Wr//////////////////////////////////
+float64 Wr = 0;
+float64 time1=0; //TSCTR period
+
+interrupt void ecap1_isr(void){ //Wr은 CEVT1가 발생할 때마다 계산된다
+    ECap1Regs.ECCLR.bit.INT = 1; //global interrupt status clear. clears INT flag and enables interrupt by CEVTx flag
+    ECap1Regs.ECCLR.bit.CEVT1 = 1; //CEVT1 flag clear
+    PieCtrlRegs.PIEACK.all |= PIEACK_GROUP4;
+    Uint32 T = ECap1Regs.CAP1;
+    Wr=2*PI*1000000000/5/T; //2PI/(5ns*#ofTSCount), tsclk=sysclk=200MHz !!!!!!!!!!!!!!!!!!!
+    time1 = ECap1Regs.TSCTR;
+
+}
+
+//configure_Wr 내용과 get_Wr 내용을 붙여서 main 함수 만들면 돌아간다.
+void Init_Wr(){
+    // eCAP CONFIGURATION
+    // 1. Input-X-Bar
+    EALLOW;
+    InputXbarRegs.INPUT7SELECT = 60; // connect GPIO60(hall_sensor_u) input to INPUT-X-BAR line no.7 -> eCAP1
+    EDIS;
+
+    // 2. Connect Interrupt
+    EALLOW;
+    PieVectTable.ECAP1_INT = &ecap1_isr; //& 필요 없음??
+    EDIS;
+    IER |= M_INT4;
+    PieCtrlRegs.PIEIER4.bit.INTx1 = 1; // enable ECAP1 PIE Interrupt
+
+    // 2. configure eCAP
+    ECap1Regs.ECEINT.all = 0x0000; // Disable All ECAP Interrupt
+
+    ECap1Regs.ECCLR.all = 0xFFFF; // clear All ECAP interrupt flag
+
+    ECap1Regs.ECCTL1.bit.CAPLDEN = 0;       // Start configuration. Disable CAP1x register loading (capture event가 레지스터에 loading이 안 되게 한다)
+    ECap1Regs.ECCTL2.bit.TSCTRSTOP = 0;     // Stop time stamp counter
+
+    ECap1Regs.ECCTL1.bit.PRESCALE = 0; // no prescale
+    ECap1Regs.ECCTL1.bit.CAP1POL = 1; // capture event1 enable on rising edge
+    //ECap1Regs.ECCTL1.bit.CAP2POL = 1;
+    //ECap1Regs.ECCTL1.bit.CAP3POL = 1;
+    //ECap1Regs.ECCTL1.bit.CAP4POL = 1;
+    ECap1Regs.ECCTL1.bit.CTRRST1 = 1; // difference mode operation: reset tscounter when capture event occurs. CAP1 register has counter value till CEVT1
+    //ECap1Regs.ECCTL1.bit.CTRRST2 = 1;
+    //ECap1Regs.ECCTL1.bit.CTRRST3 = 1;
+    //ECap1Regs.ECCTL1.bit.CTRRST4 = 1;
+
+    ECap1Regs.ECCTL1.bit.CAPLDEN = 1; // CAPx register loading enable
+
+    ECap1Regs.ECCTL2.bit.CAP_APWM = 0; // capture mode
+    ECap1Regs.ECCTL2.bit.CONT_ONESHT = 0; // one-shot mode
+    ECap1Regs.ECCTL2.bit.SYNCO_SEL = 0; // pass the syncInput to syncOutput
+    ECap1Regs.ECCTL2.bit.SYNCI_EN = 0; // Disable SyncIn. APWM mode로 사용하지 않으므로, CTRPHS값이 TSCTR에 loading될 필요가 없음.
+
+}
+
+void Start_Wr(){
+
+       //start_ecap
+       ECap1Regs.ECCTL2.bit.TSCTRSTOP = 1; // configuration is done. start eCAP_RUN;
+
+       ECap1Regs.ECCTL2.bit.STOP_WRAP = 0; //wrap around after CEVT1
+
+       ECap1Regs.ECEINT.bit.CEVT1 = 1;//enable CEVT1 as interrupt source
+
+       EINT;
+
+}
+
+//////////////////////////calculate angle/////////////////////
+
+float64 nujeok=0; //for test
+float64 nujeok_mec=0;
+float64 angle_previous=0;
+float64 angle=0;
+
+float64 get_angle(){
+
+    //float64 angle = 0;
+    float64 time=0;
+    time=ECap1Regs.TSCTR;
+
+    if (hall_state.hu && !(hall_state.hv) && hall_state.hw ){//101
+        angle = 0;
+        //angle += (time)*(5/1000000000)*Wr;
+    }
+    else if (hall_state.hu && !(hall_state.hv) && !(hall_state.hw) ){//100
+        angle = Deg_60_IN_RAD;
+        //angle += (time-time1/6)*(5/1000000000)*Wr;
+    }
+    else if (hall_state.hu && hall_state.hv && !(hall_state.hw) ){//110
+        angle = 2*Deg_60_IN_RAD;
+        //angle += (time-time1*2/6)*(5/1000000000)*Wr;
+    }
+    else if (!(hall_state.hu) && hall_state.hv && !(hall_state.hw) ){//010
+        angle = 3*Deg_60_IN_RAD;
+        //angle += (time-time1*3/6)*(5/1000000000)*Wr;
+    }
+    else if (!(hall_state.hu) && hall_state.hv && hall_state.hw ){//011
+        angle = 4*Deg_60_IN_RAD;
+        //angle += (time-time1*4/6)*(5/1000000000)*Wr;
+    }
+    else if (!(hall_state.hu) && !(hall_state.hv) && hall_state.hw ){//001
+        angle = 5*Deg_60_IN_RAD;
+        //angle += (time-time1*5/6)*(5/1000000000)*Wr;
+    }
+
+    //////////////////////
+    /*
+    if (angle!=angle_previous){
+        //nujeok+=Deg_60_IN_RAD;
+        if(angle_previous==5*Deg_60_IN_RAD){
+            if(angle==0){
+               // rotate forward
+                nujeok += Deg_60_IN_RAD;
+            }else if(angle==4*Deg_60_IN_RAD){
+                // rotate backward
+                nujeok -= Deg_60_IN_RAD;
+            }
+        }else{
+            if(angle>angle_previous){
+                // rotate forward
+                nujeok +=Deg_60_IN_RAD;
+            }else{
+                // rotate backward
+                nujeok -=Deg_60_IN_RAD;
+             }
+        }*/
+        /*
+
+        if ((angle!=0) && (angle_previous<angle)){
+            nujeok+=Deg_60_IN_RAD;
+        }
+        else if ((angle==0) && (angle_previous==5*Deg_60_IN_RAD)){
+            nujeok+=Deg_60_IN_RAD;
+        }
+        else if ((angle!=5*Deg_60_IN_RAD) && (angle_previous>angle)){
+            nujeok-=Deg_60_IN_RAD;
+        }
+        else if ((angle==5*Deg_60_IN_RAD) && (angle_previous==0)){
+            nujeok-=Deg_60_IN_RAD;
+        }*/
+
+
+        if (angle-angle_previous>Deg_60_IN_RAD-1){
+           angle_previous=angle_previous+Deg_60_IN_RAD;
+           nujeok=nujeok+Deg_60_IN_RAD;
+        }
+        else if (angle-angle_previous < -5*Deg_60_IN_RAD+1){
+            angle_previous=angle_previous-5*Deg_60_IN_RAD;
+            nujeok=nujeok+Deg_60_IN_RAD;
+        }
+        else if (angle-angle_previous < -Deg_60_IN_RAD+1){
+            angle_previous=angle_previous-Deg_60_IN_RAD;
+            nujeok=nujeok-Deg_60_IN_RAD;
+        }
+        else if (angle-angle_previous > 5*Deg_60_IN_RAD-1){
+            angle_previous=angle_previous+5*Deg_60_IN_RAD;
+            nujeok=nujeok-Deg_60_IN_RAD;
+        }
+
+       // nujeok_mec=nujeok/23;
+
+        if (nujeok_mec > 2*PI){
+            nujeok_mec -=2*PI;
+        }
+
+        if (nujeok_mec < 0){
+            nujeok_mec +=2*PI;
+        }
+
+
+    return nujeok_mec; //누적된 기계각  //나중에 angle로 고치기
+}
+
+//////////////////////main for test///////////////////////////
+
+float64 test_angle=0;
+Hall_state test_state;
+
+int main(void){
+    InitSysCtrl();
+    InitGpio();
+
+    DINT;
+    InitPieCtrl();
+    IER = 0x0000;
+    IFR = 0x0000;
+    InitPieVectTable();
+
+
+    EINT;
+    ERTM;
+
+    //hall_u(GPIO60) 입력 필요
+
+    Init_hall_sensor(23, 10000);
+    Start_hall_sensor();
+
+    Init_Wr();
+    Start_Wr();
+
+
+    while(1){
+
+        test_state = hall_sensor_update();
+        test_angle = get_angle();
+        angle_previous=angle;
+        //Wr 도 관찰
+    }
+}
+
+
+
+
+
